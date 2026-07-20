@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conversor SPED EFD ICMS/IPI → Excel (.xlsx)</title>
+<style>
+  :root {
+    --bg: #f4f6f9; --card: #ffffff; --border: #dde3ea; --text: #1c2733;
+    --muted: #5b6b7c; --accent: #0b6e4f; --accent-soft: #e6f4ef; --err: #b3261e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: "Segoe UI", Calibri, Arial, sans-serif;
+    background: var(--bg); color: var(--text); min-height: 100vh;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 32px 20px 60px; }
+  header h1 { font-size: 24px; margin: 0 0 6px; }
+  header p { margin: 0 0 24px; color: var(--muted); font-size: 14px; }
+  #drop {
+    background: var(--card); border: 2px dashed var(--border); border-radius: 12px;
+    padding: 46px 24px; text-align: center; cursor: pointer; transition: all .15s;
+  }
+  #drop.over { border-color: var(--accent); background: var(--accent-soft); }
+  #drop .big { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
+  #drop .small { color: var(--muted); font-size: 13px; }
+  #fileInput { display: none; }
+  .file {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    margin-top: 16px; padding: 16px 18px;
+  }
+  .file .head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .file .name { font-weight: 600; word-break: break-all; flex: 1; min-width: 200px; }
+  .file .status { font-size: 13px; color: var(--muted); }
+  .file .status.err { color: var(--err); font-weight: 600; }
+  .btn {
+    background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+    padding: 9px 18px; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  .btn:hover { filter: brightness(1.1); }
+  .btn[disabled] { opacity: .5; cursor: default; }
+  details { margin-top: 12px; }
+  summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+  table.regs { border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+  table.regs th, table.regs td { border: 1px solid var(--border); padding: 4px 12px; text-align: left; }
+  table.regs th { background: #f2f2f2; }
+  table.regs td:last-child { text-align: right; }
+  .bar { height: 6px; background: var(--border); border-radius: 3px; margin-top: 12px; overflow: hidden; display: none; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .1s; }
+  footer { margin-top: 34px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Conversor SPED EFD ICMS/IPI &rarr; Excel</h1>
+    <p>Selecione o arquivo <b>.txt</b> da EFD ICMS/IPI e gere uma planilha <b>.xlsx</b> com uma aba
+       para cada registro (0000, 0150, C100, C170, C190, E110…), incluindo as colunas de contexto
+       dos registros de nível superior. Todo o processamento acontece no seu navegador —
+       nenhum dado é enviado para a internet.</p>
+  </header>
+
+  <div id="drop">
+    <div class="big">Arraste o arquivo .txt aqui</div>
+    <div class="small">ou clique para selecionar (pode selecionar vários)</div>
+    <input id="fileInput" type="file" accept=".txt,text/plain" multiple>
+  </div>
+
+  <div id="list"></div>
+
+  <footer>
+    Layout de saída compatível com o modelo EfdIcmsIpi.xlsx: cabeçalhos com o nome de cada campo do
+    Guia Prático da EFD ICMS/IPI, datas como data do Excel, valores e alíquotas como número (duas casas),
+    demais campos como texto (preservando zeros à esquerda). Arquivos lidos na codificação Windows-1252/ISO-8859-1,
+    padrão do SPED.
+  </footer>
+</div>
+
+<script>
+"use strict";
+/* =====================================================================
+ * Conversor SPED EFD ICMS/IPI -> XLSX
+ * Sem dependências externas: parser do TXT + gerador de .xlsx (ZIP+XML).
+ * ===================================================================== */
+
+/* ---- Layouts (campos próprios de cada registro, iniciando em REG) ---- */
+const LAYOUTS = {
+  "0000": ["REG","COD_VER","COD_FIN","DT_INI","DT_FIN","NOME","CNPJ","CPF","UF","IE","COD_MUN","IM","SUFRAMA","IND_PERFIL","IND_ATIV"],
+  "0001": ["REG","IND_MOV"],
+  "0002": ["REG","CLAS_ESTAB_IND"],
+  "0005": ["REG","FANTASIA","CEP","END","NUM","COMPL","BAIRRO","FONE","FAX","EMAIL"],
+  "0015": ["REG","UF_ST","IE_ST"],
+  "0100": ["REG","NOME","CPF","CRC","CNPJ","CEP","END","NUM","COMPL","BAIRRO","FONE","FAX","EMAIL","COD_MUN"],
+  "0150": ["REG","COD_PART","NOME","COD_PAIS","CNPJ","CPF","IE","COD_MUN","SUFRAMA","END","NUM","COMPL","BAIRRO"],
+  "0175": ["REG","DT_ALT","NR_CAMPO","CONT_ANT"],
+  "0190": ["REG","UNID","DESCR"],
+  "0200": ["REG","COD_ITEM","DESCR_ITEM","COD_BARRA","COD_ANT_ITEM","UNID_INV","TIPO_ITEM","COD_NCM","EX_IPI","COD_GEN","COD_LST","ALIQ_ICMS","CEST"],
+  "0205": ["REG","DESCR_ANT_ITEM","DT_INI","DT_FIM","COD_ANT_ITEM"],
+  "0206": ["REG","COD_COMB"],
+  "0220": ["REG","UNID_CONV","FAT_CONV","COD_BARRA"],
+  "0300": ["REG","COD_IND_BEM","IDENT_MERC","DESCR_ITEM","COD_PRNC","COD_CTA","NR_PARC"],
+  "0305": ["REG","COD_CCUS","FUNC","VIDA_UTIL"],
+  "0400": ["REG","COD_NAT","DESCR_NAT"],
+  "0450": ["REG","COD_INF","TXT"],
+  "0460": ["REG","COD_OBS","TXT"],
+  "0500": ["REG","DT_ALT","COD_NAT_CC","IND_CTA","NIVEL","COD_CTA","NOME_CTA"],
+  "0600": ["REG","DT_ALT","COD_CCUS","CCUS"],
+  "0990": ["REG","QTD_LIN_0"],
+  "B001": ["REG","IND_DAD"],
+  "B990": ["REG","QTD_LIN_B"],
+  "C001": ["REG","IND_MOV"],
+  "C100": ["REG","IND_OPER","IND_EMIT","COD_PART","COD_MOD","COD_SIT","SER","NUM_DOC","CHV_NFE","DT_DOC","DT_E_S","VL_DOC","IND_PGTO","VL_DESC","VL_ABAT_NT","VL_MERC","IND_FRT","VL_FRT","VL_SEG","VL_OUT_DA","VL_BC_ICMS","VL_ICMS","VL_BC_ICMS_ST","VL_ICMS_ST","VL_IPI","VL_PIS","VL_COFINS","VL_PIS_ST","VL_COFINS_ST"],
+  "C101": ["REG","VL_FCP_UF_DEST","VL_ICMS_UF_DEST","VL_ICMS_UF_REM"],
+  "C105": ["REG","OPER","UF"],
+  "C110": ["REG","COD_INF","TXT_COMPL"],
+  "C111": ["REG","NUM_PROC","IND_PROC"],
+  "C112": ["REG","COD_DA","UF","NUM_DA","COD_AUT","VL_DA","DT_VCTO","DT_PGTO"],
+  "C113": ["REG","IND_OPER","IND_EMIT","COD_PART","COD_MOD","SER","SUB","NUM_DOC","DT_DOC","CHV_DOCe"],
+  "C114": ["REG","COD_MOD","ECF_FAB","ECF_CX","NUM_DOC","DT_DOC"],
+  "C116": ["REG","COD_MOD","NR_SAT","CHV_CFE","NUM_CFE","DT_DOC"],
+  "C120": ["REG","COD_DOC_IMP","NUM_DOC_IMP","PIS_IMP","COFINS_IMP","NUM_ACDRAW"],
+  "C130": ["REG","VL_SERV_NT","VL_BC_ISSQN","VL_ISSQN","VL_BC_IRRF","VL_IRRF","VL_BC_PREV","VL_PREV"],
+  "C140": ["REG","IND_EMIT","IND_TIT","DESC_TIT","NUM_TIT","QTD_PARC","VL_TIT"],
+  "C141": ["REG","NUM_PARC","DT_VCTO","VL_PARC"],
+  "C160": ["REG","COD_PART","VEIC_ID","QTD_VOL","PESO_BRT","PESO_LIQ","UF_ID"],
+  "C165": ["REG","COD_PART","VEIC_ID","COD_AUT","NR_PASSE","HORA","TEMPER","QTD_VOL","PESO_BRT","PESO_LIQ","NOM_MOT","CPF","UF_ID"],
+  "C170": ["REG","NUM_ITEM","COD_ITEM","DESCR_COMPL","QTD","UNID","VL_ITEM","VL_DESC","IND_MOV","CST_ICMS","CFOP","COD_NAT","VL_BC_ICMS","ALIQ_ICMS","VL_ICMS","VL_BC_ICMS_ST","ALIQ_ST","VL_ICMS_ST","IND_APUR","CST_IPI","COD_ENQ","VL_BC_IPI","ALIQ_IPI","VL_IPI","CST_PIS","VL_BC_PIS","ALIQ_PIS","QUANT_BC_PIS","ALIQ_PIS_QUANT","VL_PIS","CST_COFINS","VL_BC_COFINS","ALIQ_COFINS","QUANT_BC_COFINS","ALIQ_COFINS_QUANT","VL_COFINS","COD_CTA","VL_ABAT_NT"],
+  "C171": ["REG","NUM_TANQUE","QTDE"],
+  "C172": ["REG","VL_BC_ISSQN","ALIQ_ISSQN","VL_ISSQN"],
+  "C190": ["REG","CST_ICMS","CFOP","ALIQ_ICMS","VL_OPR","VL_BC_ICMS","VL_ICMS","VL_BC_ICMS_ST","VL_ICMS_ST","VL_RED_BC","VL_IPI","COD_OBS"],
+  "C191": ["REG","VL_FCP_OP","VL_FCP_ST","VL_FCP_RET"],
+  "C195": ["REG","COD_OBS","TXT_COMPL"],
+  "C197": ["REG","COD_AJ","DESCR_COMPL_AJ","COD_ITEM","VL_BC_ICMS","ALIQ_ICMS","VL_ICMS","VL_OUTROS"],
+  "C300": ["REG","COD_MOD","SER","SUB","NUM_DOC_INI","NUM_DOC_FIN","DT_DOC","VL_DOC","VL_PIS","VL_COFINS","COD_CTA"],
+  "C310": ["REG","NUM_DOC_CANC"],
+  "C320": ["REG","CST_ICMS","CFOP","ALIQ_ICMS","VL_OPR","VL_BC_ICMS","VL_ICMS","VL_RED_BC","COD_OBS"],
+  "C321": ["REG","COD_ITEM","QTD","UNID","VL_ITEM","VL_DESC","VL_BC_ICMS","VL_ICMS","VL_PIS","VL_COFINS"],
+  "C350": ["REG","SER","SUB_SER","NUM_DOC","DT_DOC","CNPJ_CPF","VL_MERC","VL_DOC","VL_DESC","VL_PIS","VL_COFINS","COD_CTA"],
+  "C370": ["REG","NUM_ITEM","COD_ITEM","QTD","UNID","VL_ITEM","VL_DESC"],
+  "C390": ["REG","CST_ICMS","CFOP","ALIQ_ICMS","VL_OPR","VL_BC_ICMS","VL_ICMS","VL_RED_BC","COD_OBS"],
+  "C400": ["REG","COD_MOD","ECF_MOD","ECF_FAB","ECF_CX"],
+  "C405": ["REG","DT_DOC","CRO","CRZ","NUM_COO_FIN","GT_FIN","VL_BRT"],
+  "C410": ["REG","VL_PIS","VL_COFINS"],
+  "C420": ["REG","COD_TOT_PAR","VLR_ACUM_TOT","NR_TOT","DESCR_NR_TOT"],
+  "C425": ["REG","COD_ITEM","QTD","UNID","VL_ITEM","VL_PIS","VL_COFINS"],
+  "C460": ["REG","COD_MOD","COD_SIT","NUM_DOC","DT_DOC","VL_DOC","VL_PIS","VL_COFINS","CPF_CNPJ","NOM_ADQ"],
+  "C465": ["REG","CHV_CFE","NUM_CCF"],
+  "C470": ["REG","COD_ITEM","QTD","QTD_CANC","UNID","VL_ITEM","CST_ICMS","CFOP","ALIQ_ICMS","VL_PIS","VL_COFINS"],
+  "C490": ["REG","CST_ICMS","CFOP","ALIQ_ICMS","VL_OPR","VL_BC_ICMS","VL_ICMS","COD_OBS"],
+  "C500": ["REG","IND_OPER","IND_EMIT","COD_PART","COD_MOD","COD_SIT","SER","SUB","COD_CONS","NUM_DOC","DT_DOC","DT_E_S","VL_DOC","VL_DESC","VL_FORN","VL_SERV_NT","VL_TERC","VL_DA","VL_BC_ICMS","VL_ICMS","VL_BC_ICMS_ST","VL_ICMS_ST","COD_INF","VL_PIS","VL_COFINS","TP_LIGACAO","COD_GRUPO_TENSAO"],
+  "C590": ["REG","CST_ICMS","CFOP","ALIQ_ICMS","VL_OPR","VL_BC_ICMS","VL_ICMS","VL_BC_ICMS_ST","VL_ICMS_ST","VL_RED_BC","COD_OBS"],
+  "C700": ["REG","COD_MOD","SER","NRO_ORD_INI","NRO_ORD_FIN","DT_DOC_INI","DT_DOC_FIN","NOM_MEST","CHV_COD_DIG"],
+  "C790": ["REG","CST_ICMS","CFOP","ALIQ_ICMS","VL_OPR","VL_BC_ICMS","VL_ICMS","VL_BC_ICMS_ST","VL_ICMS_ST","VL_RED_BC","COD_OBS"],
+  "C791": ["REG","UF","VL_BC_ICMS_ST","VL_ICMS_ST"],
+  "C800": ["REG","COD_MOD","COD_SIT","NUM_CFE","DT_DOC","VL_CFE","VL_PIS","VL_COFINS","CNPJ_CPF","NR_SAT","CHV_CFE","VL_DESC","VL_MERC","VL_OUT_DA","VL_ICMS","VL_PIS_ST","VL_COFINS_ST"],
+  "C810": ["REG","NUM_ITEM","COD_ITEM","QTD","UNID","VL_ITEM","CST_ICMS","CFOP"],
+  "C850": ["REG","CST_ICMS","CFOP","ALIQ_ICMS","VL_OPR","VL_BC_ICMS","VL_ICMS","COD_OBS"],
+  "C860": ["REG","COD_MOD","NR_SAT","DT_DOC","DOC_INI","DOC_FIM"],
+  "C890": ["REG","CST_ICMS","CFOP","ALIQ_ICMS","VL_OPR","VL_BC_ICMS","VL_ICMS","COD_OBS"],
+  "C990": ["REG","QTD_LIN_C"],
+  "D001": ["REG","IND_MOV"],
+  "D100": ["REG","IND_OPER","IND_EMIT","COD_PART","COD_MOD","COD_SIT","SER","SUB","NUM_DOC","CHV_CTE","DT_DOC","DT_A_P","TP_CTE","CHV_CTE_REF","VL_DOC","VL_DESC","IND_FRT","VL_SERV","VL_BC_ICMS","VL_ICMS","VL_NT","COD_INF","COD_CTA","COD_MUN_ORIG","COD_MUN_DEST"],
+  "D101": ["REG","VL_FCP_UF_DEST","VL_ICMS_UF_DEST","VL_ICMS_UF_REM"],
+  "D110": ["REG","NUM_ITEM","COD_ITEM","VL_SERV","VL_OUT"],
+  "D120": ["REG","COD_MUN_ORIG","COD_MUN_DEST","VEIC_ID","UF_ID"],
+  "D190": ["REG","CST_ICMS","CFOP","ALIQ_ICMS","VL_OPR","VL_BC_ICMS","VL_ICMS","VL_RED_BC","COD_OBS"],
+  "D195": ["REG","COD_OBS","TXT_COMPL"],
+  "D197": ["REG","COD_AJ","DESCR_COMPL_AJ","COD_ITEM","VL_BC_ICMS","ALIQ_ICMS","VL_ICMS","VL_OUTROS"],
+  "D500": ["REG","IND_OPER","IND_EMIT","COD_PART","COD_MOD","COD_SIT","SER","SUB","NUM_DOC","DT_DOC","DT_A_P","VL_DOC","VL_DESC","VL_SERV","VL_SERV_NT","VL_TERC","VL_DA","VL_BC_ICMS","VL_ICMS","COD_INF","VL_PIS","VL_COFINS","COD_CTA","TP_ASSINANTE"],
+  "D590": ["REG","CST_ICMS","CFOP","ALIQ_ICMS","VL_OPR","VL_BC_ICMS","VL_ICMS","VL_BC_ICMS_ST","VL_ICMS_ST","VL_RED_BC","COD_OBS"],
+  "D990": ["REG","QTD_LIN_D"],
+  "E001": ["REG","IND_MOV"],
+  "E100": ["REG","DT_INI","DT_FIN"],
+  "E110": ["REG","VL_TOT_DEBITOS","VL_AJ_DEBITOS","VL_TOT_AJ_DEBITOS","VL_ESTORNOS_CRED","VL_TOT_CREDITOS","VL_AJ_CREDITOS","VL_TOT_AJ_CREDITOS","VL_ESTORNOS_DEB","VL_SLD_CREDOR_ANT","VL_SLD_APURADO","VL_TOT_DED","VL_ICMS_RECOLHER","VL_SLD_CREDOR_TRANSPORTAR","DEB_ESP"],
+  "E111": ["REG","COD_AJ_APUR","DESCR_COMPL_AJ","VL_AJ_APUR"],
+  "E112": ["REG","NUM_DA","NUM_PROC","IND_PROC","PROC","TXT_COMPL"],
+  "E113": ["REG","COD_PART","COD_MOD","SER","SUB","NUM_DOC","DT_DOC","COD_ITEM","VL_AJ_ITEM","CHV_DOCe"],
+  "E115": ["REG","COD_INF_ADIC","VL_INF_ADIC","DESCR_COMPL_AJ"],
+  "E116": ["REG","COD_OR","VL_OR","DT_VCTO","COD_REC","NUM_PROC","IND_PROC","PROC","TXT_COMPL","MES_REF"],
+  "E200": ["REG","UF","DT_INI","DT_FIN"],
+  "E210": ["REG","IND_MOV_ST","VL_SLD_CRED_ANT_ST","VL_DEVOL_ST","VL_RESSARC_ST","VL_OUT_CRED_ST","VL_AJ_CREDITOS_ST","VL_RETENÇAO_ST","VL_OUT_DEB_ST","VL_AJ_DEBITOS_ST","VL_SLD_DEV_ANT_ST","VL_DEDUÇÕES_ST","VL_ICMS_RECOL_ST","VL_SLD_CRED_ST_TRANSPORTAR","DEB_ESP_ST"],
+  "E220": ["REG","COD_AJ_APUR","DESCR_COMPL_AJ","VL_AJ_APUR"],
+  "E230": ["REG","NUM_DA","NUM_PROC","IND_PROC","PROC","TXT_COMPL"],
+  "E240": ["REG","COD_PART","COD_MOD","SER","SUB","NUM_DOC","DT_DOC","COD_ITEM","VL_AJ_ITEM","CHV_DOCe"],
+  "E250": ["REG","COD_OR","VL_OR","DT_VCTO","COD_REC","NUM_PROC","IND_PROC","PROC","TXT_COMPL","MES_REF"],
+  "E300": ["REG","UF","DT_INI","DT_FIN"],
+  "E990": ["REG","QTD_LIN_E"],
+  "G001": ["REG","IND_MOV"],
+  "G990": ["REG","QTD_LIN_G"],
+  "H001": ["REG","IND_MOV"],
+  "H005": ["REG","DT_INV","VL_INV","MOT_INV"],
+  "H010": ["REG","COD_ITEM","UNID","QTD","VL_UNIT","VL_ITEM","IND_PROP","COD_PART","TXT_COMPL","COD_CTA","VL_ITEM_IR"],
+  "H020": ["REG","CST_ICMS","BC_ICMS","VL_ICMS"],
+  "H990": ["REG","QTD_LIN_H"],
+  "K001": ["REG","IND_MOV"],
+  "K100": ["REG","DT_INI","DT_FIN"],
+  "K200": ["REG","DT_EST","COD_ITEM","QTD","IND_EST","COD_PART"],
+  "K220": ["REG","DT_MOV","COD_ITEM_ORI","COD_ITEM_DEST","QTD","QTD_DEST"],
+  "K230": ["REG","DT_INI_OP","DT_FIN_OP","COD_DOC_OP","COD_ITEM","QTD_ENC"],
+  "K235": ["REG","DT_SAIDA","COD_ITEM","QTD","COD_INS_SUBST"],
+  "K250": ["REG","DT_PROD","COD_ITEM","QTD"],
+  "K255": ["REG","DT_CONS","COD_ITEM","QTD","COD_INS_SUBST"],
+  "K280": ["REG","DT_EST","COD_ITEM","QTD_COR_POS","QTD_COR_NEG","IND_EST","COD_PART"],
+  "K990": ["REG","QTD_LIN_K"],
+  "1001": ["REG","IND_MOV"],
+  "1010": ["REG","IND_EXP","IND_CCRF","IND_COMB","IND_USINA","IND_VA","IND_EE","IND_CART","IND_FORM","IND_AER","IND_GIAF1","IND_GIAF3","IND_GIAF4","IND_REST_RESSARC_COMPL_ICMS"],
+  "1100": ["REG","IND_DOC","NRO_DE","DT_DE","NAT_EXP","NRO_RE","DT_RE","CHC_EMB","DT_CHC","DT_AVB","TP_CHC","PAIS"],
+  "1105": ["REG","COD_MOD","SERIE","NUM_DOC","CHV_NFE","DT_DOC","COD_ITEM"],
+  "1110": ["REG","COD_PART","COD_MOD","SER","NUM_DOC","DT_DOC","CHV_NFE","NR_MEMO","QTD","UNID"],
+  "1600": ["REG","COD_PART","TOT_CREDITO","TOT_DEBITO"],
+  "1601": ["REG","COD_PART_IP","COD_PART_IT","TOT_VS","TOT_ISS","TOT_OUTROS"],
+  "1700": ["REG","COD_DISP","COD_MOD","SER","SUB","NUM_DOC_INI","NUM_DOC_FIN","NUM_AUT"],
+  "1710": ["REG","SER","SUB","NUM_DOC_INI","NUM_DOC_FIN"],
+  "1990": ["REG","QTD_LIN_1"],
+  "9001": ["REG","IND_MOV"],
+  "9900": ["REG","REG_BLC","QTD_REG_BLC"],
+  "9990": ["REG","QTD_LIN_9"],
+  "9999": ["REG","QTD_LIN"]
+};
+
+/* ---- Tipos por campo próprio (extraídos do modelo de referência) ----
+ * t = texto | d = data (ddmmaaaa) | i = inteiro | n = número (0,00) | ? = heurística */
+const TYPES = {
+  "0000": "tttddtt?ttt??tt",
+  "0001": "tt", "0005": "ttttt?t???",
+  "0100": "tttt?ttt?t??ti",
+  "0150": "tttttttt?tt?t",
+  "0190": "ttt",
+  "0200": "tttt?tit???nt",
+  "0400": "ttt", "0450": "ttt", "0990": "tt",
+  "B001": "tt", "B990": "tt", "C001": "tt",
+  "C100": "tttttttttddntnnntnnnnnnnnnnnn",
+  "C110": "ttt",
+  "C170": "ttttntnnttttnnnnnnt??nnntnn??ntnn??n?n",
+  "C190": "tttnnnnnnnn?",
+  "C990": "tt", "D001": "tt", "D990": "tt", "E001": "tt",
+  "E100": "tdd",
+  "E110": "tnnnnnnnnnnnnnn",
+  "E200": "ttdd",
+  "E210": "ttnnnnnnnnnnnnn",
+  "E250": "ttndn????t",
+  "E990": "tt", "G001": "tt", "G990": "tt", "H001": "tt",
+  "H005": "tdnt",
+  "H990": "tt", "K001": "tt", "K990": "tt", "1001": "tt",
+  "1010": "tttttttttttttt",
+  "1990": "tt", "9001": "tt",
+  "9900": "tti",
+  "9990": "tt", "9999": "tt"
+};
+
+/* ---- Contexto herdado dos registros "pai" ----
+ * Todo registro (exceto 0000) recebe 0000-REG, 0000-DT_INI, 0000-DT_FIN, 0000-CNPJ.
+ * CTX[reg] lista os demais ancestrais; CONTRIB[pai] = nº de campos iniciais herdados. */
+const CONTRIB = {
+  "0150": 2, "0200": 2, "0300": 2,
+  "C100": 11, "C300": 7, "C350": 6, "C400": 5, "C500": 12, "C700": 7, "C800": 6, "C860": 6,
+  "D100": 12, "D500": 11,
+  "E001": 2, "E100": 3, "E200": 4, "E210": 2, "E300": 4,
+  "H005": 2, "K100": 3, "1100": 3
+};
+const CTX = (() => {
+  const m = {};
+  const set = (kids, chain) => kids.forEach(k => { m[k] = chain; });
+  set(["0175"], ["0150"]);
+  set(["0205","0206","0220"], ["0200"]);
+  set(["0305"], ["0300"]);
+  set(["C101","C105","C110","C111","C112","C113","C114","C116","C120","C130","C140","C141",
+       "C160","C165","C170","C171","C172","C190","C191","C195","C197"], ["C100"]);
+  set(["C310","C320","C321"], ["C300"]);
+  set(["C370","C390"], ["C350"]);
+  set(["C405","C410","C420","C425","C460","C465","C470","C490"], ["C400"]);
+  set(["C590"], ["C500"]);
+  set(["C790","C791"], ["C700"]);
+  set(["C810","C850"], ["C800"]);
+  set(["C890"], ["C860"]);
+  set(["D101","D110","D120","D190","D195","D197"], ["D100"]);
+  set(["D590"], ["D500"]);
+  set(["E100","E200","E300"], ["E001"]);
+  set(["E110","E111","E112","E113","E115","E116"], ["E001","E100"]);
+  set(["E210"], ["E001","E200"]);
+  set(["E220","E230","E240","E250"], ["E001","E200","E210"]);
+  set(["H010","H020"], ["H005"]);
+  set(["K200","K220","K230","K235","K250","K255","K280"], ["K100"]);
+  set(["1105","1110"], ["1100"]);
+  return m;
+})();
+
+/* Campos do 0000 usados como contexto global (nome e posição no layout). */
+const CTX0000 = [["REG",0],["DT_INI",3],["DT_FIN",4],["CNPJ",6]];
+
+function heurType(name) {
+  if (/^DT_/.test(name)) return "d";
+  if (/^QTD_LIN/.test(name) || name === "QTD_REG_BLC") return "i";
+  if (/^(VL_|VLR_|ALIQ_|QUANT_|PESO_|TOT_|QTD$|QTD_|FAT_CONV$|BC_ICMS$|GT_FIN$|VL_)/.test(name)) return "n";
+  return "t";
+}
+function fieldType(reg, idx, name) {
+  const t = (TYPES[reg] || "")[idx];
+  return (t && t !== "?") ? t : heurType(name);
+}
+function layoutOf(reg) { return LAYOUTS[reg] || null; }
+function fieldName(reg, idx) {
+  const lay = layoutOf(reg);
+  if (lay && idx < lay.length) return lay[idx];
+  return idx === 0 ? "REG" : "CAMPO_" + String(idx + 1).padStart(2, "0");
+}
+
+/* ---------------------------- Parser do TXT --------------------------- */
+function parseSped(text) {
+  const sheets = new Map();       // reg -> { cols:[{name,type,src,idx}], rows:[[...]], nCols }
+  const ctxStore = new Map();     // reg -> array de valores da última ocorrência
+  const lines = text.split(/\r?\n/);
+
+  function buildCols(reg, nOwn) {
+    const cols = [];
+    if (reg !== "0000") {
+      for (const [nm, i] of CTX0000)
+        cols.push({ name: "0000-" + nm, type: fieldType("0000", i, nm), src: "0000", idx: i });
+      for (const anc of (CTX[reg] || [])) {
+        const n = CONTRIB[anc] || 1;
+        for (let i = 0; i < n; i++) {
+          const nm = fieldName(anc, i);
+          cols.push({ name: anc + "-" + nm, type: fieldType(anc, i, nm), src: anc, idx: i });
+        }
+      }
+    }
+    for (let i = 0; i < nOwn; i++) {
+      const nm = fieldName(reg, i);
+      cols.push({ name: nm, type: fieldType(reg, i, nm), src: null, idx: i });
+    }
+    return cols;
+  }
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || line[0] !== "|") continue;
+    const parts = line.split("|");
+    parts.shift();                                  // antes do primeiro |
+    if (parts.length && parts[parts.length - 1] === "") parts.pop(); // depois do último |
+    if (!parts.length) continue;
+    const reg = parts[0];
+    if (!reg) continue;
+
+    ctxStore.set(reg, parts);
+
+    let sh = sheets.get(reg);
+    if (!sh) {
+      const lay = layoutOf(reg);
+      sh = { reg, cols: buildCols(reg, Math.max(lay ? lay.length : 0, parts.length)), rows: [] };
+      sheets.set(reg, sh);
+    }
+    // linha com mais campos do que o layout conhecido: estende as colunas
+    const nCtx = sh.cols.filter(c => c.src !== null).length;
+    while (sh.cols.length - nCtx < parts.length) {
+      const i = sh.cols.length - nCtx;
+      const nm = fieldName(reg, i);
+      sh.cols.push({ name: nm, type: fieldType(reg, i, nm), src: null, idx: i });
+    }
+
+    const row = sh.cols.map(c => {
+      if (c.src === null) return parts[c.idx] !== undefined ? parts[c.idx] : "";
+      const anc = ctxStore.get(c.src);
+      return anc && anc[c.idx] !== undefined ? anc[c.idx] : "";
+    });
+    sh.rows.push(row);
+  }
+  return [...sheets.values()];   // na ordem de primeira ocorrência no arquivo
+}
+
+/* ------------------------- Geração do XLSX ---------------------------- */
+const XML_HEAD = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+
+function xmlEsc(s) {
+  return s.replace(/[&<>]/g, ch => ch === "&" ? "&amp;" : ch === "<" ? "&lt;" : "&gt;")
+          .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+}
+function colRef(n) { // 1 -> A, 27 -> AA
+  let s = "";
+  while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = (n - 1 - r) / 26; }
+  return s;
+}
+function dateSerial(v) { // ddmmaaaa -> serial Excel (base 1900)
+  if (!/^\d{8}$/.test(v)) return null;
+  const d = +v.slice(0, 2), m = +v.slice(2, 4), y = +v.slice(4);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  const ms = Date.UTC(y, m - 1, d);
+  const dt = new Date(ms);
+  if (dt.getUTCDate() !== d || dt.getUTCMonth() !== m - 1) return null;
+  return ms / 86400000 + 25569;
+}
+function numVal(v) {
+  const s = v.replace(",", ".");
+  return /^-?\d+(\.\d+)?$/.test(s) ? Number(s) : null;
+}
+
+function cellXml(ref, value, type, styleHeader) {
+  if (styleHeader) return `<c r="${ref}" s="1" t="inlineStr"><is><t>${xmlEsc(value)}</t></is></c>`;
+  if (value !== "") {
+    if (type === "d") {
+      const ser = dateSerial(value);
+      if (ser !== null) return `<c r="${ref}" s="3"><v>${ser}</v></c>`;
+    } else if (type === "i") {
+      if (/^-?\d+$/.test(value)) return `<c r="${ref}" s="4"><v>${Number(value)}</v></c>`;
+    } else if (type === "n") {
+      const n = numVal(value);
+      if (n !== null) return `<c r="${ref}" s="5"><v>${n}</v></c>`;
+    }
+  }
+  return `<c r="${ref}" s="2" t="inlineStr"><is><t>${xmlEsc(value)}</t></is></c>`;
+}
+
+function sheetXml(sh) {
+  const nCols = sh.cols.length;
+  const out = [XML_HEAD,
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+    '<sheetViews><sheetView workbookViewId="0" rightToLeft="0"></sheetView></sheetViews>', '<cols>'];
+  for (let i = 1; i <= nCols; i++) out.push(`<col min="${i}" max="${i}" width="20" customWidth="1"/>`);
+  out.push('</cols>', '<sheetData>', '<row r="1">');
+  for (let i = 0; i < nCols; i++) out.push(cellXml(colRef(i + 1) + "1", sh.cols[i].name, "t", true));
+  out.push('</row>');
+  for (let r = 0; r < sh.rows.length; r++) {
+    const rn = r + 2, row = sh.rows[r];
+    out.push(`<row r="${rn}">`);
+    for (let i = 0; i < nCols; i++) out.push(cellXml(colRef(i + 1) + rn, row[i], sh.cols[i].type, false));
+    out.push('</row>');
+  }
+  out.push(`<row r="${sh.rows.length + 2}"></row>`, '</sheetData>', '</worksheet>');
+  return out.join("\n");
+}
+
+const STYLES_XML = XML_HEAD + `<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<numFmts count="0"></numFmts>
+<fonts count="2">
+<font><sz val="11"/><color rgb="FF000000"/><name val="Calibri"/><family val="2"/></font>
+<font><sz val="10"/><color rgb="FF000000"/><name val="Calibri"/><family val="2"/></font>
+</fonts>
+<fills count="3">
+<fill><patternFill patternType="none"><fgColor rgb="FFFFFFFF"/><bgColor rgb="FFFFFFFF"/></patternFill></fill>
+<fill><patternFill patternType="gray125"><fgColor rgb="FFFFFFFF"/><bgColor rgb="FFFFFFFF"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFF2F2F2"/><bgColor rgb="FFF2F2F2"/></patternFill></fill>
+</fills>
+<borders count="1"><border diagonalDown="0" diagonalUp="0"><left/><right/><top/><bottom/><diagonal/></border></borders>
+<cellXfs count="6">
+<xf numFmtId="0" fontId="0" fillId="0" borderId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>
+<xf numFmtId="0" fontId="1" fillId="2" borderId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>
+<xf numFmtId="0" fontId="1" fillId="0" borderId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>
+<xf numFmtId="14" fontId="1" fillId="0" borderId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>
+<xf numFmtId="1" fontId="1" fillId="0" borderId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>
+<xf numFmtId="2" fontId="1" fillId="0" borderId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>
+</cellXfs>
+</styleSheet>`;
+
+function workbookXml(sheetNames) {
+  let s = XML_HEAD + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>';
+  sheetNames.forEach((nm, i) => { s += `<sheet name="${xmlEsc(nm)}" sheetId="${i + 1}" r:id="RidWS${i + 1}"/>`; });
+  return s + '</sheets></workbook>';
+}
+function workbookRels(n) {
+  let s = XML_HEAD + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">';
+  for (let i = 1; i <= n; i++)
+    s += `<Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="/xl/worksheets/sheet${i}.xml" Id="RidWS${i}"/>`;
+  s += '<Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="/xl/styles.xml" Id="RidSt1"/>';
+  s += '<Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="/xl/sharedStrings.xml" Id="RidSS1"/>';
+  return s + '</Relationships>';
+}
+function contentTypes(n) {
+  let s = XML_HEAD + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+    '<Default Extension="xml" ContentType="application/xml"/>' +
+    '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+    '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
+    '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>';
+  for (let i = 1; i <= n; i++)
+    s += `<Override PartName="/xl/worksheets/sheet${i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`;
+  return s + '</Types>';
+}
+const ROOT_RELS = XML_HEAD + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdWb1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>';
+const SHARED_STRINGS = XML_HEAD + '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"></sst>';
+
+/* ------------------------------- ZIP ----------------------------------- */
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(buf) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+async function deflateRaw(data) {
+  if (typeof CompressionStream === "undefined") return null;
+  try {
+    const stream = new Blob([data]).stream().pipeThrough(new CompressionStream("deflate-raw"));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch (e) { return null; }
+}
+async function buildZip(entries) { // entries: [{name, data:Uint8Array}]
+  const enc = new TextEncoder();
+  const now = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+  const chunks = [], central = [];
+  let offset = 0;
+
+  const u16 = v => new Uint8Array([v & 255, (v >> 8) & 255]);
+  const u32 = v => new Uint8Array([v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255]);
+
+  for (const e of entries) {
+    const nameB = enc.encode(e.name);
+    const crc = crc32(e.data);
+    let comp = await deflateRaw(e.data);
+    let method = 8;
+    if (!comp || comp.length >= e.data.length) { comp = e.data; method = 0; }
+    const local = [u32(0x04034b50), u16(20), u16(0), u16(method), u16(dosTime), u16(dosDate),
+      u32(crc), u32(comp.length), u32(e.data.length), u16(nameB.length), u16(0), nameB, comp];
+    central.push({ nameB, crc, method, csize: comp.length, usize: e.data.length, offset });
+    for (const c of local) { chunks.push(c); offset += c.length; }
+  }
+  const cdStart = offset;
+  for (const c of central) {
+    const rec = [u32(0x02014b50), u16(20), u16(20), u16(0), u16(c.method), u16(dosTime), u16(dosDate),
+      u32(c.crc), u32(c.csize), u32(c.usize), u16(c.nameB.length), u16(0), u16(0), u16(0), u16(0),
+      u32(0), u32(c.offset), c.nameB];
+    for (const r of rec) { chunks.push(r); offset += r.length; }
+  }
+  const cdSize = offset - cdStart;
+  const eocd = [u32(0x06054b50), u16(0), u16(0), u16(central.length), u16(central.length),
+    u32(cdSize), u32(cdStart), u16(0)];
+  for (const r of eocd) { chunks.push(r); offset += r.length; }
+
+  const out = new Uint8Array(offset);
+  let p = 0;
+  for (const c of chunks) { out.set(c, p); p += c.length; }
+  return out;
+}
+
+async function buildXlsx(sheets) {
+  const enc = new TextEncoder();
+  const entries = [
+    { name: "[Content_Types].xml", data: enc.encode(contentTypes(sheets.length)) },
+    { name: "_rels/.rels", data: enc.encode(ROOT_RELS) },
+    { name: "xl/workbook.xml", data: enc.encode(workbookXml(sheets.map(s => s.reg))) },
+    { name: "xl/_rels/workbook.xml.rels", data: enc.encode(workbookRels(sheets.length)) },
+    { name: "xl/styles.xml", data: enc.encode(STYLES_XML) },
+    { name: "xl/sharedStrings.xml", data: enc.encode(SHARED_STRINGS) }
+  ];
+  sheets.forEach((sh, i) => {
+    entries.push({ name: `xl/worksheets/sheet${i + 1}.xml`, data: enc.encode(sheetXml(sh)) });
+  });
+  return buildZip(entries);
+}
+
+async function convertSpedTxt(arrayBuffer) {
+  const text = new TextDecoder("windows-1252").decode(arrayBuffer);
+  const sheets = parseSped(text);
+  if (!sheets.length) throw new Error("Nenhum registro SPED encontrado no arquivo (linhas devem iniciar e terminar com \"|\").");
+  const bytes = await buildXlsx(sheets);
+  return { sheets, bytes };
+}
+
+/* Exporta para testes fora do navegador. */
+if (typeof globalThis !== "undefined") {
+  globalThis.SpedConverter = { parseSped, buildXlsx, convertSpedTxt };
+}
+
+/* -------------------------------- UI ----------------------------------- */
+if (typeof document !== "undefined" && document.getElementById("drop")) {
+  const drop = document.getElementById("drop");
+  const input = document.getElementById("fileInput");
+  const list = document.getElementById("list");
+
+  drop.addEventListener("click", () => input.click());
+  drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", e => {
+    e.preventDefault(); drop.classList.remove("over");
+    handleFiles(e.dataTransfer.files);
+  });
+  input.addEventListener("change", () => { handleFiles(input.files); input.value = ""; });
+
+  function fmtBytes(n) {
+    if (n > 1048576) return (n / 1048576).toFixed(1) + " MB";
+    if (n > 1024) return (n / 1024).toFixed(0) + " KB";
+    return n + " B";
+  }
+
+  function handleFiles(files) {
+    for (const f of files) processFile(f);
+  }
+
+  async function processFile(file) {
+    const card = document.createElement("div");
+    card.className = "file";
+    card.innerHTML = `
+      <div class="head">
+        <div class="name"></div>
+        <div class="status">Convertendo…</div>
+        <button class="btn" disabled>Baixar .xlsx</button>
+      </div>
+      <div class="bar"><div></div></div>
+      <div class="extra"></div>`;
+    card.querySelector(".name").textContent = file.name + " (" + fmtBytes(file.size) + ")";
+    list.prepend(card);
+    const status = card.querySelector(".status");
+    const btn = card.querySelector(".btn");
+
+    try {
+      const buf = await file.arrayBuffer();
+      const t0 = performance.now();
+      const { sheets, bytes } = await convertSpedTxt(buf);
+      const secs = ((performance.now() - t0) / 1000).toFixed(1);
+      const totalRows = sheets.reduce((a, s) => a + s.rows.length, 0);
+      status.textContent = `Pronto: ${sheets.length} abas, ${totalRows.toLocaleString("pt-BR")} registros (${secs}s, ${fmtBytes(bytes.length)})`;
+
+      const outName = file.name.replace(/\.txt$/i, "") + ".xlsx";
+      const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      btn.disabled = false;
+      btn.addEventListener("click", () => {
+        const a = document.createElement("a");
+        a.href = url; a.download = outName; a.click();
+      });
+      // download automático na primeira conversão
+      const a = document.createElement("a");
+      a.href = url; a.download = outName; a.click();
+
+      const extra = card.querySelector(".extra");
+      const det = document.createElement("details");
+      det.innerHTML = "<summary>Registros por aba</summary>";
+      const tb = document.createElement("table");
+      tb.className = "regs";
+      tb.innerHTML = "<tr><th>Registro</th><th>Linhas</th></tr>" +
+        sheets.map(s => `<tr><td>${s.reg}</td><td>${s.rows.length.toLocaleString("pt-BR")}</td></tr>`).join("");
+      det.appendChild(tb);
+      extra.appendChild(det);
+    } catch (err) {
+      status.textContent = "Erro: " + (err && err.message ? err.message : err);
+      status.classList.add("err");
+    }
+  }
+}
+</script>
+</body>
+</html>
